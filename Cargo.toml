@@ -1,0 +1,13 @@
+[package]
+name = "VoxelEngine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+winit = "0.30.13"
+wgpu = "30.0.1"
+glam = "0.34.1"
+bytemuck = "1.25.2"
+pollster = "1.0.1"
+noise = "0.9.0"
