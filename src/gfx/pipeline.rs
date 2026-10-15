@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use bytemuck::{cast_slice, Pod, Zeroable};
 use glam::{camera, Vec3};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
@@ -16,19 +18,19 @@ use wgpu::{
     VertexStepMode,
 };
 use wgpu::Device;
-
 use crate::gfx::camera::Camera;
-use crate::world::mesh::Mesh;
+use crate::world::chunk::{Chunk, CHUNK_SIZE};
+use crate::world::mesh;
+use crate::world::world::World;
 
 const SHADOW_MAP_SIZE: u32 = 2048;
 const SHADOW_RADIUS: f32 = 80.0;
 const LIGHT_DIRECTION: Vec3 = Vec3::new(-0.4, 0.8, -0.3);
-
 const ATTRIBUTES: [VertexAttribute; 4] =
     vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
-
 const SHADOW_ATTRIBUTES: [VertexAttribute; 1] =
     vertex_attr_array![0 => Float32x3];
+pub const RENDER_DISTANCE: i64 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -54,12 +56,17 @@ struct MatrixUniform {
     matrix: [[f32; 4]; 4],
 }
 
+struct ChunkBuffers {
+    vertex_buffer: Option<Buffer>,
+    index_buffer: Option<Buffer>,
+    index_count: u32,
+}
+
 pub struct VoxelRenderer {
     pipeline: RenderPipeline,
     shadow_pipeline: RenderPipeline,
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    index_count: u32,
+
+    chunks: HashMap<(i32, i32), ChunkBuffers>,
 
     camera_buffer: Buffer,
     light_buffer: Buffer,
@@ -86,19 +93,17 @@ impl VoxelRenderer {
         width: u32,
         height: u32,
         queue: &Queue,
-        mesh: &Mesh,
+        world: &World,
     ) -> Self {
-        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Cube Vertex Buffer"),
-            contents: cast_slice(&mesh.vertices),
-            usage: BufferUsages::VERTEX,
-        });
 
-        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Chunk Index Buffer"),
-            contents: cast_slice(&mesh.indices),
-            usage: BufferUsages::INDEX,
-        });
+        let mut chunks = HashMap::new();
+
+        for (&(chunk_x, chunk_z), chunk) in world.chunks_iter() {
+            let buffers = generate_chunk_buffer(device, chunk, chunk_x, chunk_z);
+            chunks.insert((chunk_x, chunk_z), buffers);
+        }
+
+        //---
 
         let light = LightUniform {
             direction: [-0.4, 0.8, -0.3, 0.0],
@@ -115,14 +120,14 @@ impl VoxelRenderer {
 
         let camera_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Camera Uniform Buffer"),
-            size: std::mem::size_of::<MatrixUniform>() as u64,
+            size: size_of::<MatrixUniform>() as u64,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let light_camera_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Light Camera Uniform Buffer"),
-            size: std::mem::size_of::<MatrixUniform>() as u64,
+            size: size_of::<MatrixUniform>() as u64,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -401,9 +406,7 @@ impl VoxelRenderer {
         let mut renderer = Self {
             pipeline,
             shadow_pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count: mesh.indices.len() as u32,
+            chunks,
             camera_buffer,
             light_buffer,
             light_camera_buffer,
@@ -447,21 +450,25 @@ impl VoxelRenderer {
         self.update_camera(queue, width, height);
     }
 
-    pub fn render(&self, encoder: &mut CommandEncoder, target: TextureView) {
+    pub fn render(&mut self, encoder: &mut CommandEncoder, target: TextureView) {
         {
+            let camera_position = self.camera.position();
+            let chunk_size = CHUNK_SIZE as i32;
+            let center_x = (camera_position.x.floor() as i32).div_euclid(chunk_size);
+            let center_z = (camera_position.z.floor() as i32).div_euclid(chunk_size);
+            let radius_squared = i64::from(RENDER_DISTANCE).pow(2);
+
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Shadow Map Pass"),
                 color_attachments: &[],
-                depth_stencil_attachment: Some(
-                    RenderPassDepthStencilAttachment {
-                        view: &self.shadow_view,
-                        depth_ops: Some(Operations {
-                            load: LoadOp::Clear(1.0),
-                            store: StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    },
-                ),
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -469,12 +476,24 @@ impl VoxelRenderer {
 
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_camera_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(
-                self.index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+            for (&(chunk_x, chunk_z), chunk) in &self.chunks {
+                let dx = i64::from(chunk_x) - i64::from(center_x);
+                let dz = i64::from(chunk_z) - i64::from(center_z);
+                if dx * dx + dz * dz > radius_squared {
+                    continue;
+                }
+
+                let (Some(vertex_buffer), Some(index_buffer)) =
+                    (&chunk.vertex_buffer, &chunk.index_buffer)
+                else {
+                    continue;
+                };
+
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
         }
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -493,16 +512,14 @@ impl VoxelRenderer {
                     store: StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: Some(
-                RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                },
-            ),
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(Operations {
+                    load: LoadOp::Clear(1.0),
+                    store: StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
@@ -511,12 +528,20 @@ impl VoxelRenderer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.camera_bind_group, &[]);
         pass.set_bind_group(1, &self.shadow_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(
-            self.index_buffer.slice(..),
-            wgpu::IndexFormat::Uint32,
-        );
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+        let chunks = &mut self.chunks;
+
+        for (&(chunk_x, chunk_z), chunk) in chunks {
+            let (Some(vertex_buffer), Some(index_buffer)) =
+                (&chunk.vertex_buffer, &chunk.index_buffer)
+            else {
+                continue;
+            };
+
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+        }
     }
 
     pub fn update_camera(&mut self, queue: &Queue, width: u32, height: u32) {
@@ -561,6 +586,51 @@ impl VoxelRenderer {
 
     pub fn camera_mut(&mut self) -> &mut Camera {
         &mut self.camera
+    }
+
+    pub fn sync_chunks(&mut self, device: &Device, world: &World) {
+        for (&(chunk_x, chunk_z), chunk) in world.chunks_iter() {
+            if let Entry::Vacant(entry) = self.chunks.entry((chunk_x, chunk_z)) {
+                entry.insert(generate_chunk_buffer(device, chunk, chunk_x, chunk_z));
+            }
+        }
+    }
+}
+
+fn generate_chunk_buffer(
+    device: &Device,
+    chunk: &Chunk,
+    chunk_x: i32,
+    chunk_z: i32,
+) -> ChunkBuffers {
+
+    let mut chunk_mesh = mesh::build_mesh(chunk);
+
+    for vertex in &mut chunk_mesh.vertices {
+        vertex.position[0] += (chunk_x * CHUNK_SIZE as i32) as f32;
+        vertex.position[2] += (chunk_z * CHUNK_SIZE as i32) as f32;
+    }
+
+    if chunk_mesh.indices.is_empty() {
+        return ChunkBuffers {
+            vertex_buffer: None,
+            index_buffer: None,
+            index_count: 0,
+        };
+    }
+
+    ChunkBuffers {
+        vertex_buffer: Some(device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Chunk Vertex Buffer"),
+            contents: cast_slice(&chunk_mesh.vertices),
+            usage: BufferUsages::VERTEX,
+        })),
+        index_buffer: Some(device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Chunk Index Buffer"),
+            contents: cast_slice(&chunk_mesh.indices),
+            usage: BufferUsages::INDEX,
+        })),
+        index_count: chunk_mesh.indices.len() as u32,
     }
 }
 

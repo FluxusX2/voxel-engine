@@ -65,7 +65,7 @@ impl Camera {
         self.projection_matrix() * self.view_matrix()
     }
 
-    pub fn move_local(&mut self, forward_input: f32, right_input: f32, up_input: f32, dt: f32) {
+    pub fn _move_local(&mut self, forward_input: f32, right_input: f32, up_input: f32, dt: f32) {
         const SPEED: f32 = 5.0;
         let forward = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin());
         let right = forward.cross(Vec3::Y);

@@ -86,7 +86,7 @@ fn block_color(block: Block) -> [f32; 3] {
         Block::Air => [0.0, 0.0, 0.0],
         Block::Grass => [0.25, 0.75, 0.2],
         Block::Dirt => [0.45, 0.28, 0.12],
-        Block::Stone => [0.55, 0.57, 0.6],
+        Block::Stone => [0.55, 0.57, 0.6], 
     }
 }
 

@@ -11,7 +11,7 @@ pub struct GPUContext {
     pub device: Device, // Connection to GPU.
     pub queue: Queue, // Queue of commands for GPU.
     pub config: SurfaceConfiguration, // Swapchain configuration.
-    pub size: PhysicalSize<u32>, // Windowsize in pixel.
+    pub size: PhysicalSize<u32>, // Window-size in pixel.
 }
 
 impl GPUContext {

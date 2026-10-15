@@ -1,6 +1,8 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use crate::world::block::Block;
 use crate::world::chunk::{Chunk, CHUNK_SIZE};
+use crate::world::terrain;
 
 #[derive(Default)]
 pub struct World {
@@ -42,6 +44,34 @@ impl World {
         self.chunks
             .get(&chunk_coords)?
             .get(local_x, local_y, local_z)
+    }
+
+    pub fn ensure_chunks_around(
+        &mut self,
+        center_x: i32,
+        center_z: i32,
+        radius: i32,
+        seed: u32,
+    ) -> usize {
+        assert!(radius >= 0, "chunk radius must not be negative");
+
+        let mut generated = 0;
+
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                let coords = (
+                    center_x.saturating_add(dx),
+                    center_z.saturating_add(dz),
+                );
+
+                if let Entry::Vacant(entry) = self.chunks.entry(coords) {
+                    entry.insert(terrain::generate_chunk(coords.0, coords.1, seed));
+                    generated += 1;
+                }
+            }
+        }
+
+        generated
     }
 }
 

@@ -104,6 +104,7 @@ impl Player {
     }
 
     pub fn find_spawn_coords(world: &World) -> Option<Vec3> {
+        println!("Searching suitable spawn...)");
         let max_chunk_radius = world
             .chunks
             .keys()
@@ -112,6 +113,7 @@ impl Player {
 
         for (chunk_x, chunk_z) in Spiral::new() {
             if chunk_x.unsigned_abs().max(chunk_z.unsigned_abs()) > max_chunk_radius {
+                eprintln!("Error occurred while generating chunks.");
                 return None;
             }
 
@@ -136,6 +138,7 @@ impl Player {
                             let world_x = chunk_x * CHUNK_SIZE as i32 + local_x as i32;
                             let world_z = chunk_z * CHUNK_SIZE as i32 + local_z as i32;
 
+                            println!("Found suitable spawn at coordinates: (x: {world_x}, y: {ground_y}, z: {world_z})");
                             return Some(Vec3::new(
                                 world_x as f32 + 0.5,
                                 (ground_y + 1) as f32,
@@ -147,6 +150,7 @@ impl Player {
             }
         }
 
+        eprintln!("Error occurred: No suitable spawn found.");
         None
     }
 }
