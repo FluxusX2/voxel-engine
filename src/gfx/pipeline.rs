@@ -3,20 +3,7 @@ use std::collections::HashMap;
 use bytemuck::{cast_slice, Pod, Zeroable};
 use glam::{camera, Vec3};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
-use wgpu::{
-    vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry,
-    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendState,
-    Buffer, BufferAddress, BufferBindingType, BufferDescriptor, BufferUsages,
-    Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction,
-    DepthStencilState, Extent3d, FragmentState, LoadOp, Operations,
-    PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModuleDescriptor,
-    ShaderSource, ShaderStages, StoreOp, Texture, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode,
-};
+use wgpu::{vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthStencilState, Extent3d, FragmentState, LoadOp, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode};
 use wgpu::Device;
 use crate::gfx::camera::Camera;
 use crate::world::chunk::{Chunk, CHUNK_SIZE};
@@ -30,7 +17,7 @@ const ATTRIBUTES: [VertexAttribute; 4] =
     vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
 const SHADOW_ATTRIBUTES: [VertexAttribute; 1] =
     vertex_attr_array![0 => Float32x3];
-pub const RENDER_DISTANCE: i64 = 5;
+pub const RENDER_DISTANCE: i64 = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -451,13 +438,14 @@ impl VoxelRenderer {
     }
 
     pub fn render(&mut self, encoder: &mut CommandEncoder, target: TextureView) {
-        {
-            let camera_position = self.camera.position();
-            let chunk_size = CHUNK_SIZE as i32;
-            let center_x = (camera_position.x.floor() as i32).div_euclid(chunk_size);
-            let center_z = (camera_position.z.floor() as i32).div_euclid(chunk_size);
-            let radius_squared = i64::from(RENDER_DISTANCE).pow(2);
 
+        let camera_position = self.camera.position();
+        let chunk_size = CHUNK_SIZE as i32;
+        let center_x = (camera_position.x.floor() as i32).div_euclid(chunk_size);
+        let center_z = (camera_position.z.floor() as i32).div_euclid(chunk_size);
+        let radius_squared = i64::from(RENDER_DISTANCE).pow(2);
+
+        {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Shadow Map Pass"),
                 color_attachments: &[],
@@ -477,23 +465,7 @@ impl VoxelRenderer {
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_camera_bind_group, &[]);
 
-            for (&(chunk_x, chunk_z), chunk) in &self.chunks {
-                let dx = i64::from(chunk_x) - i64::from(center_x);
-                let dz = i64::from(chunk_z) - i64::from(center_z);
-                if dx * dx + dz * dz > radius_squared {
-                    continue;
-                }
-
-                let (Some(vertex_buffer), Some(index_buffer)) =
-                    (&chunk.vertex_buffer, &chunk.index_buffer)
-                else {
-                    continue;
-                };
-
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..chunk.index_count, 0, 0..1);
-            }
+            load_to_pass(pass, self, center_x, center_z, radius_squared);
         }
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -529,19 +501,7 @@ impl VoxelRenderer {
         pass.set_bind_group(0, &self.camera_bind_group, &[]);
         pass.set_bind_group(1, &self.shadow_bind_group, &[]);
 
-        let chunks = &mut self.chunks;
-
-        for (&(chunk_x, chunk_z), chunk) in chunks {
-            let (Some(vertex_buffer), Some(index_buffer)) =
-                (&chunk.vertex_buffer, &chunk.index_buffer)
-            else {
-                continue;
-            };
-
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..chunk.index_count, 0, 0..1);
-        }
+        load_to_pass(pass, self, center_x, center_z, radius_squared);
     }
 
     pub fn update_camera(&mut self, queue: &Queue, width: u32, height: u32) {
@@ -589,11 +549,33 @@ impl VoxelRenderer {
     }
 
     pub fn sync_chunks(&mut self, device: &Device, world: &World) {
+        self.chunks.retain(|coords, _| world.chunks.contains_key(coords));
+
         for (&(chunk_x, chunk_z), chunk) in world.chunks_iter() {
             if let Entry::Vacant(entry) = self.chunks.entry((chunk_x, chunk_z)) {
                 entry.insert(generate_chunk_buffer(device, chunk, chunk_x, chunk_z));
             }
         }
+    }
+}
+
+fn load_to_pass(mut pass: RenderPass, voxel_renderer: &mut VoxelRenderer, center_x: i32, center_z: i32, radius_squared: i64) {
+    for (&(chunk_x, chunk_z), chunk) in &voxel_renderer.chunks {
+        let dx = i64::from(chunk_x) - i64::from(center_x);
+        let dz = i64::from(chunk_z) - i64::from(center_z);
+        if dx * dx + dz * dz > radius_squared {
+            continue;
+        }
+
+        let (Some(vertex_buffer), Some(index_buffer)) =
+            (&chunk.vertex_buffer, &chunk.index_buffer)
+        else {
+            continue;
+        };
+
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..chunk.index_count, 0, 0..1);
     }
 }
 

@@ -56,6 +56,7 @@ impl World {
         assert!(radius >= 0, "chunk radius must not be negative");
 
         let mut generated = 0;
+        let radius_squared = i64::from(radius).pow(2);
 
         for dx in -radius..=radius {
             for dz in -radius..=radius {
@@ -63,6 +64,12 @@ impl World {
                     center_x.saturating_add(dx),
                     center_z.saturating_add(dz),
                 );
+
+                let distance_x = i64::from(coords.0) - i64::from(center_x);
+                let distance_z = i64::from(coords.1) - i64::from(center_z);
+                if distance_x * distance_x + distance_z * distance_z > radius_squared {
+                    continue;
+                }
 
                 if let Entry::Vacant(entry) = self.chunks.entry(coords) {
                     entry.insert(terrain::generate_chunk(coords.0, coords.1, seed));
@@ -72,6 +79,16 @@ impl World {
         }
 
         generated
+    }
+
+    pub fn unload_chunks_outside(&mut self, center_x: i32, center_z: i32, radius: i32) {
+        let radius_squared = i64::from(radius).pow(2);
+
+        self.chunks.retain(|&(x, z), _| {
+            let dx = i64::from(x) - i64::from(center_x);
+            let dz = i64::from(z) - i64::from(center_z);
+            dx * dx + dz * dz <= radius_squared
+        });
     }
 }
 

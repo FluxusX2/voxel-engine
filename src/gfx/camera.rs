@@ -1,8 +1,10 @@
 use glam::{camera, Mat4, Vec3};
+use crate::gfx::pipeline::RENDER_DISTANCE;
+use crate::world::chunk::CHUNK_SIZE;
 
 const FOV_Y: f32 = 90.0_f32.to_radians();
 const NEAR_PLANE: f32 = 0.1;
-const FAR_PLANE: f32 = 100.0;
+const FAR_PLANE: f32 = RENDER_DISTANCE as f32 * CHUNK_SIZE as f32;
 const MAX_PITCH: f32 = 89.0_f32.to_radians();
 
 #[derive(Debug, Clone, Copy)]
