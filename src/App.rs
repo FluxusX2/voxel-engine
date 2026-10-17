@@ -10,6 +10,7 @@ use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
+
 use crate::engine::input::InputState;
 use crate::engine::player::Player;
 use crate::engine::worker_thread::ChunkWorker;
@@ -18,6 +19,7 @@ use crate::gfx::pipeline::{VoxelRenderer, RENDER_DISTANCE};
 use crate::world::{terrain};
 use crate::world::chunk::CHUNK_SIZE;
 use crate::world::world::World;
+
 
 const WORLD_SIZE: i32 = 16;
 const MAX_CHUNKS_PER_FRAME: usize = 2; // Must be kept small
@@ -223,6 +225,8 @@ impl ApplicationHandler for App {
             .expect("WGPU Init failed...");
 
         let world = self.generate_world();
+        let center_x = (self.player.pos.x.floor() as i32).div_euclid(CHUNK_SIZE as i32);
+        let center_z = (self.player.pos.z.floor() as i32).div_euclid(CHUNK_SIZE as i32);
 
         self.chunk_worker = Some(ChunkWorker::new());
 
@@ -232,7 +236,9 @@ impl ApplicationHandler for App {
             context.config.width,
             context.config.height,
             &context.queue,
-            &world
+            &world,
+            center_x,
+            center_z,
         ));
 
         self.world = Some(world);
@@ -338,7 +344,7 @@ fn update_chunks(
                 center_z.saturating_add(dz),
             );
 
-            if !world.chunks.contains_key(&coords)
+            if !world.loaded_chunks.contains_key(&coords)
                 && !requested_chunks.contains(&coords)
             {
                 missing.push((distance_squared, coords));

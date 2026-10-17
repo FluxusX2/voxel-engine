@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytemuck::{cast_slice, Pod, Zeroable};
 use glam::{camera, Vec3};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
-use wgpu::{vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthStencilState, Extent3d, FragmentState, LoadOp, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode};
+use wgpu::{vertex_attr_array, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType, BufferDescriptor, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CompareFunction, DepthStencilState, Extent3d, FragmentState, LoadOp, MultisampleState, Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPass, RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StoreOp, Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode};
 use wgpu::Device;
 use crate::gfx::camera::Camera;
 use crate::world::chunk::{Chunk, CHUNK_SIZE};
@@ -18,6 +18,7 @@ const ATTRIBUTES: [VertexAttribute; 4] =
 const SHADOW_ATTRIBUTES: [VertexAttribute; 1] =
     vertex_attr_array![0 => Float32x3];
 pub const RENDER_DISTANCE: i64 = 16;
+const MSAA_SAMPLE_COUNT: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -68,8 +69,12 @@ pub struct VoxelRenderer {
     shadow_view: TextureView,
     _shadow_sampler: Sampler,
 
+    _msaa_texture: Texture,
+    msaa_view: TextureView,
+
     width: u32,
     height: u32,
+    format: TextureFormat,
     camera: Camera,
 }
 
@@ -81,11 +86,20 @@ impl VoxelRenderer {
         height: u32,
         queue: &Queue,
         world: &World,
+        center_x: i32,
+        center_z: i32
     ) -> Self {
 
         let mut chunks = HashMap::new();
 
         for (&(chunk_x, chunk_z), chunk) in world.chunks_iter() {
+
+            let dx = i64::from(chunk_x) - i64::from(center_x);
+            let dz = i64::from(chunk_z) - i64::from(center_z);
+            if dx * dx + dz * dz > RENDER_DISTANCE.pow(2) {
+                continue;
+            }
+
             let buffers = generate_chunk_buffer(device, chunk, chunk_x, chunk_z);
             chunks.insert((chunk_x, chunk_z), buffers);
         }
@@ -314,7 +328,11 @@ impl VoxelRenderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: 0,
+                alpha_to_coverage_enabled: false,
+            },
             fragment: Some(FragmentState {
                 module: &cube_shader,
                 entry_point: Some("fs_main"),
@@ -388,7 +406,8 @@ impl VoxelRenderer {
             camera.set_aspect_ratio(width as f32 / height as f32);
         }
 
-        let (depth_texture, depth_view) = create_depth_texture(device, width, height);
+        let (_depth_texture, depth_view) = create_depth_texture(device, width, height);
+        let (_msaa_texture, msaa_view) = create_msaa_texture(device, width, height, format);
 
         let mut renderer = Self {
             pipeline,
@@ -400,13 +419,16 @@ impl VoxelRenderer {
             camera_bind_group,
             shadow_camera_bind_group,
             shadow_bind_group,
-            _depth_texture: depth_texture,
+            _depth_texture,
             depth_view,
             _shadow_texture: shadow_texture,
             shadow_view,
             _shadow_sampler: shadow_sampler,
+            _msaa_texture,
+            msaa_view,
             width,
             height,
+            format,
             camera,
         };
 
@@ -428,8 +450,13 @@ impl VoxelRenderer {
         if self.width != width || self.height != height {
             let (depth_texture, depth_view) =
                 create_depth_texture(device, width, height);
+            let (msaa_texture, msaa_view) =
+                create_msaa_texture(device, width, height, self.format);
+
             self._depth_texture = depth_texture;
             self.depth_view = depth_view;
+            self._msaa_texture = msaa_texture;
+            self.msaa_view = msaa_view;
             self.width = width;
             self.height = height;
         }
@@ -471,9 +498,9 @@ impl VoxelRenderer {
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Cube Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target,
+                view: &self.msaa_view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: Some(&target),
                 ops: Operations {
                     load: LoadOp::Clear(Color {
                         r: 0.1,
@@ -481,7 +508,7 @@ impl VoxelRenderer {
                         b: 0.3,
                         a: 1.0,
                     }),
-                    store: StoreOp::Store,
+                    store: StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
@@ -549,7 +576,7 @@ impl VoxelRenderer {
     }
 
     pub fn sync_chunks(&mut self, device: &Device, world: &World) {
-        self.chunks.retain(|coords, _| world.chunks.contains_key(coords));
+        self.chunks.retain(|coords, _| world.loaded_chunks.contains_key(coords));
 
         for (&(chunk_x, chunk_z), chunk) in world.chunks_iter() {
             if let Entry::Vacant(entry) = self.chunks.entry((chunk_x, chunk_z)) {
@@ -629,9 +656,34 @@ fn create_depth_texture(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
         dimension: TextureDimension::D2,
         format: TextureFormat::Depth32Float,
+        usage: TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let view = texture.create_view(&TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_msaa_texture(
+    device: &Device,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+) -> (Texture, TextureView) {
+    let texture = device.create_texture(&TextureDescriptor {
+        label: Some("MSAA Color Texture"),
+        size: Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLE_COUNT,
+        dimension: TextureDimension::D2,
+        format,
         usage: TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });

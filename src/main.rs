@@ -3,6 +3,7 @@ mod gfx;
 mod engine;
 pub mod world;
 pub mod utilities;
+pub mod block;
 
 use app::App;
 use winit::event_loop::{ControlFlow, EventLoop};

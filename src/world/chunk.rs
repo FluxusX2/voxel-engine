@@ -1,4 +1,4 @@
-use crate::world::block::Block;
+use crate::block::block::BlockId;
 
 pub const CHUNK_SIZE: usize = 16;
 pub const CHUNK_HEIGHT: usize = 32;
@@ -6,7 +6,7 @@ const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_HEIGHT;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
-    blocks: [Block; CHUNK_VOLUME],
+    blocks: [BlockId; CHUNK_VOLUME],
 }
 
 impl Default for Chunk {

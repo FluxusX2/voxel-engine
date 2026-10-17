@@ -1,21 +1,22 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use crate::world::block::Block;
+use crate::block::block::BlockRegistry;
 use crate::world::chunk::{Chunk, CHUNK_SIZE};
 use crate::world::terrain;
 
 #[derive(Default)]
 pub struct World {
-    pub chunks: HashMap<(i32, i32), Chunk>,
+    pub loaded_chunks: HashMap<(i32, i32), Chunk>,
+    pub block_registry: BlockRegistry,
 }
 
 impl World {
     pub fn insert_chunk(&mut self, chunk_x: i32, chunk_z: i32, chunk: Chunk) {
-        self.chunks.insert((chunk_x, chunk_z), chunk);
+        self.loaded_chunks.insert((chunk_x, chunk_z), chunk);
     }
 
     pub fn chunks_iter(&self) -> impl Iterator<Item = (&(i32, i32), &Chunk)> {
-        self.chunks.iter()
+        self.loaded_chunks.iter()
     }
 
     pub fn is_solid_at(&self, x: i32, y: i32, z: i32) -> bool {
@@ -28,7 +29,7 @@ impl World {
         let local_x = x.rem_euclid(chunk_size) as usize;
         let local_z = z.rem_euclid(chunk_size) as usize;
 
-        self.chunks
+        self.loaded_chunks
             .get(&chunk_coords)
             .and_then(|chunk| chunk.get(local_x, local_y, local_z))
             .is_some_and(Block::is_solid)
@@ -41,7 +42,7 @@ impl World {
         let local_x = x.rem_euclid(chunk_size) as usize;
         let local_z = z.rem_euclid(chunk_size) as usize;
 
-        self.chunks
+        self.loaded_chunks
             .get(&chunk_coords)?
             .get(local_x, local_y, local_z)
     }
@@ -71,7 +72,7 @@ impl World {
                     continue;
                 }
 
-                if let Entry::Vacant(entry) = self.chunks.entry(coords) {
+                if let Entry::Vacant(entry) = self.loaded_chunks.entry(coords) {
                     entry.insert(terrain::generate_chunk(coords.0, coords.1, seed));
                     generated += 1;
                 }
@@ -84,7 +85,7 @@ impl World {
     pub fn unload_chunks_outside(&mut self, center_x: i32, center_z: i32, radius: i32) {
         let radius_squared = i64::from(radius).pow(2);
 
-        self.chunks.retain(|&(x, z), _| {
+        self.loaded_chunks.retain(|&(x, z), _| {
             let dx = i64::from(x) - i64::from(center_x);
             let dz = i64::from(z) - i64::from(center_z);
             dx * dx + dz * dz <= radius_squared

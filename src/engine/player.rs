@@ -106,7 +106,7 @@ impl Player {
     pub fn find_spawn_coords(world: &World) -> Option<Vec3> {
         println!("Searching suitable spawn...)");
         let max_chunk_radius = world
-            .chunks
+            .loaded_chunks
             .keys()
             .map(|&(chunk_x, chunk_z)| chunk_x.unsigned_abs().max(chunk_z.unsigned_abs()))
             .max()?;
@@ -117,7 +117,7 @@ impl Player {
                 return None;
             }
 
-            let Some(chunk) = world.chunks.get(&(chunk_x, chunk_z)) else {
+            let Some(chunk) = world.loaded_chunks.get(&(chunk_x, chunk_z)) else {
                 continue;
             };
 
